@@ -239,10 +239,29 @@ select:focus{border-color:var(--orange);}
     <input type="password" id="login-password" placeholder="Password" style="width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r);padding:11px 14px;color:var(--text);font-family:var(--fb);font-size:13px;outline:none;margin-bottom:14px;box-sizing:border-box;" onkeydown="if(event.key==='Enter')doLogin()">
     <button onclick="doLogin()" id="login-btn" style="width:100%;background:var(--orange);border:none;border-radius:var(--r);padding:11px;color:#fff;font-family:var(--fh);font-size:15px;font-weight:800;letter-spacing:1px;cursor:pointer;text-transform:uppercase;">SIGN IN</button>
     <div id="login-msg" style="margin-top:14px;font-size:11px;font-family:var(--fm);min-height:14px;"></div>
+    <div style="margin-top:14px;">
+      <span onclick="doForgotPassword()" style="color:var(--tan);font-size:11px;font-family:var(--fm);cursor:pointer;text-decoration:underline;">Forgot password?</span>
+    </div>
     <div style="margin-top:18px;padding-top:18px;border-top:1px solid var(--border);font-size:10px;color:var(--text3);font-family:var(--fm);line-height:1.6;">
       Need an account? Contact your S&amp;C department head to be added.<br>
       Data is encrypted and stored on Supabase cloud.
     </div>
+  </div>
+</div>
+
+<!-- SET NEW PASSWORD (shown only when arriving via a password-reset email link) -->
+<div id="reset-password-overlay" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:10000;align-items:center;justify-content:center;flex-direction:column;">
+  <div style="background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r3);padding:36px 40px;max-width:420px;width:90%;text-align:center;">
+    <div style="margin-bottom:22px;">
+      <div style="font-family:var(--fh);font-size:36px;font-weight:900;color:var(--orange);letter-spacing:1px;line-height:1;">BGSU</div>
+      <div style="font-size:10px;color:var(--tan);font-family:var(--fb);letter-spacing:1.5px;text-transform:uppercase;margin-top:4px;">Bowling Green State</div>
+    </div>
+    <div style="font-family:var(--fh);font-size:15px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Set New Password</div>
+    <div style="font-size:11px;color:var(--text3);font-family:var(--fm);margin-bottom:18px;">Choose a new password for your account.</div>
+    <input type="password" id="reset-password-new" placeholder="New password" style="width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r);padding:11px 14px;color:var(--text);font-family:var(--fb);font-size:13px;outline:none;margin-bottom:10px;box-sizing:border-box;">
+    <input type="password" id="reset-password-confirm" placeholder="Confirm new password" style="width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r);padding:11px 14px;color:var(--text);font-family:var(--fb);font-size:13px;outline:none;margin-bottom:14px;box-sizing:border-box;" onkeydown="if(event.key==='Enter')doSetNewPassword()">
+    <button onclick="doSetNewPassword()" id="reset-password-btn" style="width:100%;background:var(--orange);border:none;border-radius:var(--r);padding:11px;color:#fff;font-family:var(--fh);font-size:15px;font-weight:800;letter-spacing:1px;cursor:pointer;text-transform:uppercase;">SET NEW PASSWORD</button>
+    <div id="reset-password-msg" style="margin-top:14px;font-size:11px;font-family:var(--fm);min-height:14px;"></div>
   </div>
 </div>
 
@@ -648,6 +667,16 @@ select:focus{border-color:var(--orange);}
           </span>
         </div>
         <div id="wl-calendar" style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;"></div>
+      </div>
+
+      <!-- PER-DRILL TRIMP BREAKDOWN -->
+      <div style="margin-top:20px;">
+        <div class="card-header" style="margin-bottom:4px;">
+          <div class="ctitle"><div class="cdot"></div>Drill Breakdown</div>
+          <div id="wl-drill-label" style="font-size:10px;font-family:var(--fm);color:var(--text3);">Select an athlete above, then a date, to see TRIMP by drill</div>
+        </div>
+        <div class="cw" style="height:220px;"><canvas id="wl-drill-chart"></canvas></div>
+        <div id="wl-drill-table" style="margin-top:10px;"></div>
       </div>
     </div>
   </div>
@@ -2560,7 +2589,18 @@ function getKinexonSessions(){
     byAthlete[nm].push(s);
   }
   for(const nm of Object.keys(byAthlete)){
-    byAthlete[nm].sort((a,b)=>b.test_date.localeCompare(a.test_date));
+    // Sorting by test_date alone leaves same-day rows in whatever order the
+    // database happened to return them — which can silently prefer a stale
+    // orphaned row (athlete_id null, left over from a previous broken/re-run
+    // import) over the correct, properly-linked one. Break same-date ties by
+    // preferring a real athlete_id first, then the most recently created row.
+    byAthlete[nm].sort((a,b)=>{
+      const dateCmp=b.test_date.localeCompare(a.test_date);
+      if(dateCmp!==0) return dateCmp;
+      const aLinked=a.athlete_id!=null?1:0, bLinked=b.athlete_id!=null?1:0;
+      if(aLinked!==bLinked) return bLinked-aLinked;
+      return (b.created_at||'').localeCompare(a.created_at||'');
+    });
   }
   return byAthlete;
 }
@@ -2579,8 +2619,8 @@ function getKinexonSessionForAthlete(athlete){
 let wlFocusAthlete=null; // athlete id currently focused in history charts
 
 function initWL(){
-  loadAllSessions().then(()=>{
-    console.log('WL: SESSIONS loaded, count=', SESSIONS.length, 'firstbeat=', Object.keys(getKinexonSessions()).length);
+  Promise.all([loadAllSessions(), loadAllSessionDrills()]).then(()=>{
+    console.log('WL: SESSIONS loaded, count=', SESSIONS.length, 'firstbeat=', Object.keys(getKinexonSessions()).length, 'drills=', SESSION_DRILLS.length);
     renderWLKpis(); renderWLBoard(); renderWLHistory();
   });
 }
@@ -2707,6 +2747,150 @@ function renderWLBoard(){
       ${td(sess.effic_score!=null?sess.effic_score.toFixed(2):null,'var(--text)')}
     </tr>`;
   }).join('');
+
+  renderDrillBreakdown();
+}
+
+// Bar chart + table of TRIMP-by-drill for the currently focused athlete on
+// the currently selected date (from the sessions board above). Built from
+// Firstbeat's per-drill "Lap" rows, captured separately from the day-total
+// "Measurement" rows.
+function renderDrillBreakdown(){
+  const label=document.getElementById('wl-drill-label');
+  const tableEl=document.getElementById('wl-drill-table');
+  kc('wl-drill-chart');
+
+  const date=document.getElementById('wl-date-sel')?.value;
+  if(!date){
+    label.textContent='Pick a date above to see TRIMP by drill';
+    tableEl.innerHTML='';
+    return;
+  }
+
+  if(!wlFocusAthlete){
+    renderDrillBreakdownTeamAvg(date,label,tableEl);
+    return;
+  }
+
+  const athlete=ATHLETES.find(a=>a.id===wlFocusAthlete);
+  if(!athlete){
+    label.textContent='Pick a date above to see TRIMP by drill';
+    tableEl.innerHTML='';
+    return;
+  }
+  const drills=SESSION_DRILLS.filter(d=>d.athlete_id===athlete._dbId&&d.test_date===date);
+  if(!drills.length){
+    label.textContent=`${athlete._canonicalName||athlete.name} — ${fmtDate(date)||date}: no drill-level data for this date`;
+    tableEl.innerHTML='';
+    return;
+  }
+  const totalTrimp=drills.reduce((s,d)=>s+(d.trimp||0),0);
+  label.textContent=`${athlete._canonicalName||athlete.name} — ${fmtDate(date)||date} — ${drills.length} drills, ${totalTrimp.toFixed(0)} TRIMP total`;
+
+  const sorted=[...drills].sort((a,b)=>(b.trimp||0)-(a.trimp||0));
+  CH['wl-drill-chart']=new Chart(document.getElementById('wl-drill-chart'),{
+    type:'bar',
+    data:{labels:sorted.map(d=>d.drill_name),datasets:[{
+      label:'TRIMP',
+      data:sorted.map(d=>d.trimp),
+      backgroundColor:'rgba(254,80,0,0.7)',
+      borderRadius:3,borderSkipped:false,
+    }]},
+    options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',
+      plugins:{legend:{display:false},tooltip:{callbacks:{
+        label:ctx=>`TRIMP: ${ctx.raw?.toFixed?.(1)??ctx.raw}`
+      }}},
+      scales:{
+        x:{grid:{color:'rgba(254,80,0,0.04)'},ticks:{color:'#6A5646',font:{size:9,family:'Share Tech Mono'}}},
+        y:{grid:{display:false},ticks:{color:'#BCA898',font:{size:9,family:'Share Tech Mono'}}}
+      }
+    }
+  });
+
+  tableEl.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:11px;font-family:var(--fm);">
+    <thead><tr style="color:var(--text3);text-align:left;">
+      <th style="padding:5px 8px;">Drill</th><th style="padding:5px 8px;text-align:center;">Duration</th>
+      <th style="padding:5px 8px;text-align:center;">TRIMP</th><th style="padding:5px 8px;text-align:center;">TRIMP/min</th>
+      <th style="padding:5px 8px;text-align:center;">Movement Load</th><th style="padding:5px 8px;text-align:center;">Avg HR</th>
+    </tr></thead><tbody>${sorted.map(d=>`<tr style="border-top:1px solid var(--border);">
+      <td style="padding:5px 8px;">${d.drill_name}</td>
+      <td style="padding:5px 8px;text-align:center;color:var(--text3);">${d.duration_min!=null?d.duration_min.toFixed(1)+' min':'—'}</td>
+      <td style="padding:5px 8px;text-align:center;color:var(--orange);">${d.trimp!=null?d.trimp.toFixed(1):'—'}</td>
+      <td style="padding:5px 8px;text-align:center;color:var(--yellow);">${d.trimp_per_min!=null?d.trimp_per_min.toFixed(2):'—'}</td>
+      <td style="padding:5px 8px;text-align:center;color:#60A5FA;">${d.movement_load!=null?d.movement_load.toFixed(1):'—'}</td>
+      <td style="padding:5px 8px;text-align:center;color:#F87171;">${d.avg_hr!=null?Math.round(d.avg_hr):'—'}</td>
+    </tr>`).join('')}</tbody></table>`;
+}
+
+// Team-average view: same chart/table shape as the individual view above,
+// but each "drill" bar is the AVERAGE TRIMP/duration/HR across every athlete
+// who ran that drill on the selected date — lets a coach see which drills
+// ran hottest across the whole team, independent of any one player.
+function renderDrillBreakdownTeamAvg(date,label,tableEl){
+  const drillsOnDate=SESSION_DRILLS.filter(d=>d.test_date===date);
+  if(!drillsOnDate.length){
+    label.textContent=`Team average — ${fmtDate(date)||date}: no drill-level data for this date`;
+    tableEl.innerHTML='';
+    return;
+  }
+  const byDrill={};
+  for(const d of drillsOnDate){
+    if(!byDrill[d.drill_name]) byDrill[d.drill_name]={drill_name:d.drill_name,trimps:[],durations:[],hrs:[],trimpMins:[],movementLoads:[],athletes:new Set()};
+    const g=byDrill[d.drill_name];
+    if(d.trimp!=null) g.trimps.push(d.trimp);
+    if(d.duration_min!=null) g.durations.push(d.duration_min);
+    if(d.avg_hr!=null) g.hrs.push(d.avg_hr);
+    if(d.trimp_per_min!=null) g.trimpMins.push(d.trimp_per_min);
+    if(d.movement_load!=null) g.movementLoads.push(d.movement_load);
+    g.athletes.add(d.athlete_id);
+  }
+  const avg=arr=>arr.length?arr.reduce((s,v)=>s+v,0)/arr.length:null;
+  const rows=Object.values(byDrill).map(g=>({
+    drill_name:g.drill_name,
+    avgTrimp:avg(g.trimps),
+    avgDuration:avg(g.durations),
+    avgHr:avg(g.hrs),
+    avgTrimpPerMin:avg(g.trimpMins),
+    avgMovementLoad:avg(g.movementLoads),
+    athleteCount:g.athletes.size,
+  }));
+  const totalAthletes=new Set(drillsOnDate.map(d=>d.athlete_id)).size;
+  label.textContent=`Team average — ${fmtDate(date)||date} — ${rows.length} drills across ${totalAthletes} athletes`;
+
+  const sorted=[...rows].sort((a,b)=>(b.avgTrimp||0)-(a.avgTrimp||0));
+  CH['wl-drill-chart']=new Chart(document.getElementById('wl-drill-chart'),{
+    type:'bar',
+    data:{labels:sorted.map(d=>d.drill_name),datasets:[{
+      label:'Avg TRIMP',
+      data:sorted.map(d=>d.avgTrimp),
+      backgroundColor:'rgba(254,80,0,0.7)',
+      borderRadius:3,borderSkipped:false,
+    }]},
+    options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',
+      plugins:{legend:{display:false},tooltip:{callbacks:{
+        label:ctx=>`Avg TRIMP: ${ctx.raw?.toFixed?.(1)??ctx.raw}`,
+        afterLabel:ctx=>`${sorted[ctx.dataIndex].athleteCount} athlete${sorted[ctx.dataIndex].athleteCount!==1?'s':''}`
+      }}},
+      scales:{
+        x:{grid:{color:'rgba(254,80,0,0.04)'},ticks:{color:'#6A5646',font:{size:9,family:'Share Tech Mono'}}},
+        y:{grid:{display:false},ticks:{color:'#BCA898',font:{size:9,family:'Share Tech Mono'}}}
+      }
+    }
+  });
+
+  tableEl.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:11px;font-family:var(--fm);">
+    <thead><tr style="color:var(--text3);text-align:left;">
+      <th style="padding:5px 8px;">Drill</th><th style="padding:5px 8px;text-align:center;">Avg Duration</th>
+      <th style="padding:5px 8px;text-align:center;">Avg TRIMP</th><th style="padding:5px 8px;text-align:center;">Avg TRIMP/min</th>
+      <th style="padding:5px 8px;text-align:center;">Avg Movement Load</th><th style="padding:5px 8px;text-align:center;">Avg HR</th>
+    </tr></thead><tbody>${sorted.map(d=>`<tr style="border-top:1px solid var(--border);">
+      <td style="padding:5px 8px;">${d.drill_name}</td>
+      <td style="padding:5px 8px;text-align:center;color:var(--text3);">${d.avgDuration!=null?d.avgDuration.toFixed(1)+' min':'—'}</td>
+      <td style="padding:5px 8px;text-align:center;color:var(--orange);">${d.avgTrimp!=null?d.avgTrimp.toFixed(1):'—'}</td>
+      <td style="padding:5px 8px;text-align:center;color:var(--yellow);">${d.avgTrimpPerMin!=null?d.avgTrimpPerMin.toFixed(2):'—'}</td>
+      <td style="padding:5px 8px;text-align:center;color:#60A5FA;">${d.avgMovementLoad!=null?d.avgMovementLoad.toFixed(1):'—'}</td>
+      <td style="padding:5px 8px;text-align:center;color:#F87171;">${d.avgHr!=null?Math.round(d.avgHr):'—'}</td>
+    </tr>`).join('')}</tbody></table>`;
 }
 
 function wlSelectAthlete(){
@@ -2776,7 +2960,14 @@ function renderWLHistory(){
       }
       return (athSessions||[]).filter(s=>s.test_date===date);
     }
-    return Object.values(kSessions).flat().filter(s=>s.test_date===date);
+    // Team view: take only the BEST session per athlete for this date — not
+    // every row. Each athlete's array is already sorted (real, properly-linked
+    // row first; stale orphaned duplicates last), so .find() picks the correct
+    // one. Flattening every row here would dilute the average with old
+    // leftover duplicate rows that shouldn't count as separate athletes.
+    return Object.values(kSessions)
+      .map(athSessions=>athSessions.find(s=>s.test_date===date))
+      .filter(Boolean);
   };
 
   // TRIMP — avg per athlete for team view, session value for individual
@@ -4127,20 +4318,21 @@ function processKinexonRows(rows){
   let dataRows=rows.slice(1).filter(r=>r.some(c=>c&&String(c).trim()));
 
   // The full Firstbeat .xlsx export includes THREE row types per session:
-  // "Measurement" (the complete session — what we want), "Lap" (a breakdown
-  // per period/segment), and "Team Session" (a sub-window of the session).
-  // Importing all three would count one real session 3-4x over. When an
-  // Analysis period column is present, keep only "Measurement" rows; older/
-  // simpler exports without this column are assumed to already be one row
-  // per session and are left untouched.
+  // "Measurement" (the complete session), "Lap" (a breakdown per drill/
+  // segment), and "Team Session" (a sub-window of the session). "Measurement"
+  // rows are the day totals we save to test_sessions; "Lap" rows are captured
+  // separately below as the per-drill breakdown. "Team Session" rows are
+  // redundant with Measurement and skipped entirely.
+  let measurementRows=dataRows, lapRows=[];
   let skippedNonMeasurement=0;
   if(ci.period>=0){
     const before=dataRows.length;
-    dataRows=dataRows.filter(r=>(r[ci.period]||'').trim().toLowerCase()==='measurement');
-    skippedNonMeasurement=before-dataRows.length;
+    measurementRows=dataRows.filter(r=>(r[ci.period]||'').trim().toLowerCase()==='measurement');
+    lapRows=dataRows.filter(r=>(r[ci.period]||'').trim().toLowerCase()==='lap');
+    skippedNonMeasurement=before-measurementRows.length-lapRows.length;
   }
 
-  const entries=dataRows.map(row=>{
+  const entries=measurementRows.map(row=>{
     const name=(row[ci.name]||'').trim();
     const date=parseFBDate(row[ci.date]);
     if(!name||!date) return null;
@@ -4173,6 +4365,29 @@ function processKinexonRows(rows){
     return;
   }
 
+  // Per-drill breakdown (Lap rows) — same columns, but keyed to a drill name
+  // rather than being a whole-day total. Kept separate from `entries` since
+  // these save to a different table (session_drills, not test_sessions).
+  const drillEntries=lapRows.map(row=>{
+    const name=(row[ci.name]||'').trim();
+    const date=parseFBDate(row[ci.date]);
+    const drillName=ci.title>=0?(row[ci.title]||'').trim():'';
+    if(!name||!date||!drillName) return null;
+    const durationMin=ci.duration>=0?parseDurationMin(row[ci.duration]):null;
+    const trimp=ci.trimp>=0?parseFloat(row[ci.trimp]):null;
+    const avgHr=ci.avgHr>=0?parseFloat(row[ci.avgHr]):null;
+    const trimpMin=ci.trimpMin>=0?parseFloat(row[ci.trimpMin]):null;
+    const movement=ci.movement>=0?parseFloat(row[ci.movement]):null;
+    return {
+      name, date, drill_name:drillName,
+      trimp: !isNaN(trimp)?trimp:null,
+      duration_min: durationMin,
+      avg_hr: !isNaN(avgHr)?avgHr:null,
+      trimp_per_min: !isNaN(trimpMin)?trimpMin:null,
+      movement_load: !isNaN(movement)?movement:null,
+    };
+  }).filter(Boolean);
+
   // Match athlete names to roster
   const matched=[], unmatched=[];
   for(const e of entries){
@@ -4187,6 +4402,18 @@ function processKinexonRows(rows){
     }
   }
 
+  // Resolve drill entries to the same canonical names (unmatched drill rows
+  // are simply dropped — no point storing per-drill data for an athlete we
+  // can't even attach the day-total session to).
+  const resolvedDrills=[];
+  for(const d of drillEntries){
+    const m=findBestMatch(d.name);
+    if(m&&m.matchType!=='ambiguous-last-name'){
+      resolvedDrills.push({...d, canonicalName:m.athlete._canonicalName||m.athlete.name, athleteId:m.athlete.id});
+    }
+  }
+  processRows._kinexonDrills=resolvedDrills;
+
   // Store and show preview
   parsedData=[...matched,...unmatched];
   processRows._isKinexonImport=true;
@@ -4197,13 +4424,14 @@ function processKinexonRows(rows){
   document.getElementById('dz-file-name').textContent='✓ '+fname+' (Firstbeat HR sessions)';
   document.getElementById('dz-athlete-count').textContent=
     `${matched.length} athletes matched · ${[...new Set(entries.map(e=>e.date))].length} date(s)`+
-    (unmatched.length?` · ${unmatched.length} unmatched`:' · All matched to roster');
+    (unmatched.length?` · ${unmatched.length} unmatched`:' · All matched to roster')+
+    (resolvedDrills.length?` · ${resolvedDrills.length} drill rows captured`:'');
 
   const nameInfo=matched.filter(e=>e.name!==e.canonicalName)
     .slice(0,3).map(e=>`${e.name} → ${e.canonicalName}`).join(', ');
 
   document.getElementById('col-map-tbl').innerHTML=
-    `<div class="ok">Firstbeat export detected · ${matched.length} sessions · auto-matched to roster${skippedNonMeasurement?` · ${skippedNonMeasurement} Lap/Team Session rows skipped (kept full-session rows only)`:''}</div>`+
+    `<div class="ok">Firstbeat export detected · ${matched.length} sessions · auto-matched to roster${skippedNonMeasurement?` · ${skippedNonMeasurement} Team Session rows skipped`:''}${resolvedDrills.length?` · ${resolvedDrills.length} per-drill rows will be saved too`:''}</div>`+
     (nameInfo?`<div class="ok">Name variants resolved: ${nameInfo}</div>`:'')+
     (unmatched.length?`<div class="warn">${unmatched.length} unmatched: ${unmatched.map(e=>e.name).join(', ')}</div>`:'');
   warnKinexonCollisions(matched);
@@ -4646,23 +4874,15 @@ async function warnKinexonCollisions(entries){
   const rows=collisions.map(e=>{
     const prev=existing.find(r=>normName(r.athlete_name)===normName(e.canonicalName||e.name)&&r.test_date===e.date);
     return `<div>${e.canonicalName||e.name} — ${fmtDate(e.date)||e.date}: existing ${prev.trimp_total??0} TRIMP`+
-      `${prev.avg_hr!=null?` / ${fmtAccel(prev.avg_hr)} bpm`:''} vs. this file's ${e.trimp_total??0} TRIMP`+
+      `${prev.avg_hr!=null?` / ${fmtAccel(prev.avg_hr)} bpm`:''} → this file's ${e.trimp_total??0} TRIMP`+
       `${e.avg_hr!=null?` / ${fmtAccel(e.avg_hr)} bpm`:''}</div>`;
   }).join('');
   const msgs=document.getElementById('csv-msgs');
   if(msgs) msgs.innerHTML+=`<div class="warn">`+
-    `<b>⚠ ${collisions.length} athlete/date pair${collisions.length!==1?'s':''} already ${collisions.length!==1?'have':'has'} a Firstbeat session logged for that day.</b> `+
+    `<b>ℹ ${collisions.length} athlete/date pair${collisions.length!==1?'s':''} already ${collisions.length!==1?'have':'has'} a Firstbeat session logged for that day.</b> `+
+    `Importing will replace the existing total with this file's number (multiple same-day sessions for the same athlete in this file are already summed together automatically):`+
     `<div style="margin-top:6px;font-family:var(--fm);font-size:11px;line-height:1.5;">${rows}</div>`+
-    `<div style="margin-top:10px;padding:10px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r);">`+
-    `<div style="font-size:11px;margin-bottom:8px;"><b>Choose how to handle this before importing — required:</b></div>`+
-    `<label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:11px;line-height:1.4;margin-bottom:8px;">`+
-    `<input type="radio" name="kinexon-collision-choice" id="kinexon-mode-sum" style="margin-top:2px;">`+
-    `<span>This is a genuinely <b>separate second session</b> that day (e.g. lift + practice) — <b>sum</b> it with what's already saved.</span>`+
-    `</label>`+
-    `<label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:11px;line-height:1.4;">`+
-    `<input type="radio" name="kinexon-collision-choice" id="kinexon-mode-replace" style="margin-top:2px;">`+
-    `<span>This file is a <b>correction</b> — <b>replace</b> the existing totals with this file's numbers (use this to undo duplicate/bad imports).</span>`+
-    `</label></div></div>`;
+    `</div>`;
 }
 
 // Preview-stage advisory: flag current roster athletes who simply have NO
@@ -4718,62 +4938,45 @@ async function commitCSV(replace){
 
   // Kinexon per-athlete import
   if(processRows._isKinexonImport){
-    // Guard against double-click / double-submit: without this, clicking either
-    // commit button twice (or both) re-runs the whole import and double/triple-sums
-    // every session, which is what caused the tripled totals.
     if(kinexonCommitLock){
       toast('Import already in progress — please wait.');
       return;
     }
     kinexonCommitLock=true;
     const replaceBtn=document.getElementById('commit-replace-btn'),updateBtn=document.getElementById('commit-update-btn');
-
-    // A same-day collision was flagged in preview — refuse to guess. The coach
-    // must explicitly pick sum vs. replace; this is what previously defaulted
-    // silently to "sum" and caused totals to be repeatedly added on top of
-    // already-inflated data.
-    if(kinexonCollisionDetected){
-      const sumChosen=document.getElementById('kinexon-mode-sum')?.checked;
-      const replaceChosen=document.getElementById('kinexon-mode-replace')?.checked;
-      if(!sumChosen&&!replaceChosen){
-        kinexonCommitLock=false;
-        showMsg('csv-msgs','err','⚠ Please choose "sum" or "replace" above before importing — a session already exists for one or more of these athlete/date pairs.');
-        return;
-      }
-    }
     [replaceBtn,updateBtn].forEach(b=>{if(b){b.disabled=true;b.style.opacity='0.5';b.style.pointerEvents='none';}});
 
     const isEventLevel=processRows._kinexonEventLevel;
     const sessions=processRows._kinexonSessions||[];
-    console.log('Kinexon commit: isEventLevel=',isEventLevel,'sessions=',sessions.length,'sb=',!!sb,'user=',!!currentUser);
+    const drills=processRows._kinexonDrills||[];
     let sessionRows=[];
 
     if(isEventLevel){
-      // Event-level: all athletes already matched, canonicalName on each entry
       sessionRows=sessions.map(e=>({
         athlete_name:        e.canonicalName||e.name,
-        test_date:           e.date,
+        test_date:            e.date,
         session_type:        e.session_type||'Training',
-        drill_name:          e.drill_name||null,
-        trimp_total:         e.trimp_total??null,
-        trimp_per_min:       e.trimp_per_min??null,
-        avg_hr:              e.avg_hr??null,
-        effic_score:         e.effic_score??null,
-        session_duration_min:e.session_duration_min||null,
-        acute_load:          e.acute_load??null,
-        chronic_load:        e.chronic_load??null,
-        acwr:                e.acwr??null,
+        drill_name:           e.drill_name||null,
+        trimp_total:          e.trimp_total??null,
+        trimp_per_min:        e.trimp_per_min??null,
+        avg_hr:               e.avg_hr??null,
+        effic_score:          e.effic_score??null,
+        session_duration_min: e.session_duration_min||null,
+        acute_load:           e.acute_load??null,
+        chronic_load:         e.chronic_load??null,
+        acwr:                 e.acwr??null,
       }));
     } else {
-      // Summary: single athlete selected from dropdown
       const sel=document.getElementById('kinexon-athlete-sel');
       const athleteId=sel?parseInt(sel.value):null;
       if(!athleteId){
         showMsg('csv-msgs','err','Please select an athlete for this file before importing.');
+        kinexonCommitLock=false;
+        [replaceBtn,updateBtn].forEach(b=>{if(b){b.disabled=false;b.style.opacity='1';b.style.pointerEvents='';}});
         return;
       }
       const athlete=ATHLETES.find(a=>a.id===athleteId);
-      if(!athlete){showMsg('csv-msgs','err','Athlete not found.');return;}
+      if(!athlete){showMsg('csv-msgs','err','Athlete not found.');kinexonCommitLock=false;return;}
       const canonicalName=athlete._canonicalName||athlete.name;
       sessionRows=sessions.map(s=>({
         athlete_name: canonicalName,
@@ -4785,144 +4988,48 @@ async function commitCSV(replace){
     }
 
     setSyncStatus('syncing','SAVING SESSIONS');
-    let saved=0, skipped=0;
-    const merges=[]; // athlete/date pairs where an existing session was SUMMED with this import (Update mode)
-    const overwrites=[]; // athlete/date pairs where an existing session was REPLACED outright (Replace mode)
-    const failures=[]; // surfaced to the UI, not just the console, so a non-dev can see why a row failed
+    const btnRow=document.getElementById('commit-buttons-row'), progRow=document.getElementById('commit-progress-row');
+    if(btnRow) btnRow.style.display='none';
+    if(progRow) progRow.style.display='block';
+    const label=document.getElementById('commit-progress-label'), cnt=document.getElementById('commit-progress-count'), fill=document.getElementById('commit-progress-fill');
+    if(label) label.textContent=`SAVING ${sessionRows.length} SESSIONS...`;
+
+    let saved=0, firstError=null, drillsSaved=0;
     if(sb&&currentUser){
-      try{
-        console.log('Saving',sessionRows.length,'session rows, first:',JSON.stringify(sessionRows[0]));
-        // Pull every Kinexon row already saved for the dates in this file ONCE,
-        // then match by normalized name client-side (same normName() the rest of
-        // the app uses for roster matching) instead of an exact-string .eq() on
-        // athlete_name. An exact-string match misses rows saved under a slightly
-        // different spelling/spacing/case, which is exactly what caused delete to
-        // silently remove 0 rows and the subsequent insert to violate the
-        // "test_sessions_kin_uq" unique constraint for the MBs.
-        const datesInFile=[...new Set(sessionRows.map(r=>r.test_date))];
-        let existingByDate=[];
-        try{
-          const {data,error}=await sb.from('test_sessions').select('*')
-            .in('test_date',datesInFile).not('jumps_total','is',null);
-          if(error) console.warn('Bulk existing-session lookup failed:',error.message);
-          existingByDate=data||[];
-        }catch(e){console.warn('Bulk existing-session lookup threw:',e.message);}
-
-        for(const row of sessionRows){
-          // Decision is driven by the explicit "sum" vs "replace" radio choice
-          // shown in the collision warning — NOT by which of the two generic
-          // commit buttons was clicked (that ambiguity is what caused repeated
-          // accidental double-summing).
-          const forceReplace=document.getElementById('kinexon-mode-replace')?.checked||false;
-          const rowNorm=normName(row.athlete_name);
-          const existingMatches=existingByDate.filter(r=>r.test_date===row.test_date&&normName(r.athlete_name)===rowNorm);
-
-          let finalRow=row;
-          if(existingMatches.length&&!forceReplace){
-            const prev=existingMatches[0];
-            finalRow=mergeKinexonSessions(prev,row);
-            merges.push({
-              athlete:row.athlete_name, date:row.test_date,
-              prevJumps:prev.jumps_total, newJumps:row.jumps_total, totalJumps:finalRow.jumps_total,
-              prevAccel:prev.accel_load, newAccel:row.accel_load, totalAccel:finalRow.accel_load,
-            });
-          } else if(existingMatches.length&&forceReplace){
-            overwrites.push({
-              athlete:row.athlete_name, date:row.test_date,
-              prevJumps:existingMatches[0].jumps_total, newJumps:row.jumps_total,
-              prevAccel:existingMatches[0].accel_load, newAccel:row.accel_load,
-            });
-          }
-
-          // Delete every matched row BY ID (handles the case where the same
-          // athlete somehow ended up saved under more than one name spelling
-          // for this date — a plain name+date delete would only catch one).
-          let deleteFailed=false;
-          for(const m of existingMatches){
-            if(m.id==null) continue;
-            const {error:delErr}=await sb.from('test_sessions').delete().eq('id', m.id);
-            if(delErr){
-              console.warn('Delete error:',delErr.message);
-              failures.push({athlete:row.athlete_name,date:row.test_date,stage:'delete',error:delErr.message});
-              deleteFailed=true;
-            }
-          }
-          if(deleteFailed) continue; // don't attempt insert if we couldn't clear the old row(s) — it would just collide again
-
-          // Insert fresh (merged totals if a same-day session already existed)
-          const {data:insData, error:insErr}=await sb.from('test_sessions').insert(finalRow).select();
-          if(!insErr&&insData){
-            saved++;
-          } else if(insErr){
-            console.warn('Insert failed:',insErr.message,'row:',JSON.stringify(finalRow));
-            failures.push({athlete:row.athlete_name,date:row.test_date,stage:'insert',error:insErr.message});
-            skipped++;
-          }
-        }
-        const athletes=[...new Set(sessionRows.map(r=>r.athlete_name))];
-        toast(`✓ ${saved} Firstbeat sessions saved · ${athletes.length} athlete${athletes.length!==1?'s':''}`+
-          `${merges.length?` · ${merges.length} same-day session${merges.length!==1?'s':''} summed`:''}`+
-          `${overwrites.length?` · ${overwrites.length} corrected/overwritten`:''}`+
-          `${skipped?` · ${skipped} failed`:''}`, 7000);
-        if(skipped>0) console.error(`${skipped} sessions failed to save — check console for details`);
-
-        let msgHtml='';
-        if(overwrites.length){
-          const rows=overwrites.map(o=>
-            `<div>${o.athlete} — ${fmtDate(o.date)||o.date}: `+
-            `jumps ${o.prevJumps??0} → <b>${o.newJumps??0}</b>`+
-            ((o.prevAccel!=null||o.newAccel!=null)
-              ?` · accel load ${fmtAccel(o.prevAccel)} → <b>${fmtAccel(o.newAccel)}</b>`
-              :'')+
-            `</div>`
-          ).join('');
-          msgHtml+=`<div><b>✓ ${overwrites.length} existing session${overwrites.length!==1?'s':''} replaced</b> (Replace mode — old totals discarded, this file's numbers are now the record):`+
-            `<div style="margin-top:6px;font-family:var(--fm);font-size:11px;line-height:1.6;">${rows}</div></div>`;
-        }
-        if(merges.length){
-          const rows=merges.map(m=>
-            `<div>${m.athlete} — ${fmtDate(m.date)||m.date}: `+
-            `jumps ${m.prevJumps??0} + ${m.newJumps??0} = <b>${m.totalJumps??0}</b>`+
-            ((m.prevAccel!=null||m.newAccel!=null)
-              ?` · accel load ${fmtAccel(m.prevAccel)} + ${fmtAccel(m.newAccel)} = <b>${fmtAccel(m.totalAccel)}</b>`
-              :'')+
-            `</div>`
-          ).join('');
-          msgHtml+=`<div style="${overwrites.length?'margin-top:10px;':''}"><b>⚠ Multiple Firstbeat sessions detected on the same day.</b> `+
-            `An existing session already existed for these athlete/date pairs, so totals were <b>summed</b> rather than overwritten (Update mode):`+
-            `<div style="margin-top:6px;font-family:var(--fm);font-size:11px;line-height:1.6;">${rows}</div>`+
-            `<div style="margin-top:6px;color:var(--text3);">If these were actually duplicate imports of the same session, use REPLACE FULL ROSTER instead to correct them, rather than importing again in Update mode.</div></div>`;
-        }
-        if(failures.length){
-          const rows=failures.map(f=>
-            `<div>${f.athlete} — ${fmtDate(f.date)||f.date} <span style="color:var(--text3);">(${f.stage})</span>: ${f.error}</div>`
-          ).join('');
-          msgHtml+=`<div style="${(overwrites.length||merges.length)?'margin-top:10px;':''}"><b>✗ ${failures.length} session${failures.length!==1?'s':''} failed to save.</b> Exact error(s) reported by the database:`+
-            `<div style="margin-top:6px;font-family:var(--fm);font-size:11px;line-height:1.6;color:var(--red);">${rows}</div>`+
-            `<div style="margin-top:6px;color:var(--text3);">If these mention a permissions/policy issue, an admin may need to check row-level security rules on test_sessions for these specific rows.</div></div>`;
-        }
-        if(msgHtml) showMsg('csv-msgs','warn',msgHtml);
-      } catch(e){toast('⚠ Save failed: '+e.message); console.error('Firstbeat save error:',e);}
+      const result=await saveTestSessions(sessionRows,(done,total)=>{
+        if(cnt) cnt.textContent=`${done} / ${total}`;
+        if(fill) fill.style.width=(total?Math.round(done/total*100):0)+'%';
+      });
+      saved=result.saved; firstError=result.firstError;
+      if(drills.length){
+        if(label) label.textContent=`SAVING ${drills.length} DRILL ROWS...`;
+        drillsSaved=await saveSessionDrills(drills);
+      }
     } else {
       console.warn('Firstbeat save: no Supabase connection or not logged in');
     }
+
     parsedData=null;
     processRows._isKinexonImport=false;
     processRows._kinexonSessions=null;
     processRows._kinexonEventLevel=false;
+    processRows._kinexonDrills=null;
     setSyncStatus('online','SYNCED');
     kinexonCommitLock=false;
+    if(btnRow) btnRow.style.display='flex';
+    if(progRow) progRow.style.display='none';
     [replaceBtn,updateBtn].forEach(b=>{if(b){b.disabled=false;b.style.opacity='1';b.style.pointerEvents='';}});
-    // If we merged or overwrote same-day sessions, keep the import panel open so the coach
-    // can actually read the summary before it disappears behind a nav.
-    if(merges.length||overwrites.length||failures.length){
-      document.getElementById('dz-file-name').textContent='';
-      document.getElementById('dz-athlete-count').textContent='';
-      document.getElementById('csv-data-prev').innerHTML='';
+    closeImport();
+    await loadAllSessions();
+    initFP();
+    if(saved===0&&firstError){
+      toast(`⚠ 0 of ${sessionRows.length} saved — error: ${firstError}`, 12000);
     } else {
-      closeImport();
-      nav('workload');
+      toast(`✓ ${saved} of ${sessionRows.length} sessions saved`+
+        (drillsSaved?` · ${drillsSaved} drill rows`:'')+
+        (saved<sessionRows.length&&firstError?` (error on rest: ${firstError})`:''), 7000);
     }
+    nav('workload');
     return;
   }
 
@@ -5384,6 +5491,19 @@ async function loadAllSessions(){
   }
 }
 
+let SESSION_DRILLS=[];
+async function loadAllSessionDrills(){
+  if(!sb||!currentUser) return;
+  try{
+    const {data, error} = await sb.from('session_drills').select('*').order('test_date',{ascending:false});
+    if(error) throw error;
+    SESSION_DRILLS = data||[];
+  } catch(e){
+    console.error('Load session_drills failed:',e);
+    SESSION_DRILLS = [];
+  }
+}
+
 function initReadiness(){
   // Default date = most recent session date, or today
   if(!readinessSelectedDate){
@@ -5591,17 +5711,101 @@ function renderTeamStrip(windowSessions, date){
 }
 
 // ── Session import: called from import flow when test_date column detected ──
+// Save per-drill (Lap-row) TRIMP breakdown data to session_drills. Simple
+// bulk insert in chunks — drills aren't deduplicated/upserted like the daily
+// totals are, since re-importing the same date is rare enough that a plain
+// "delete this date's drills, then insert fresh" is simplest and safest.
+async function saveSessionDrills(drills){
+  if(!drills||!drills.length||!sb||!currentUser) return 0;
+  // Re-resolve each drill's real Supabase athlete id by name at save time
+  // (same pattern saveTestSessions uses) rather than trusting whatever local
+  // in-memory id got attached during parsing, which is a different, unstable
+  // identifier than the database's actual athletes.id foreign key.
+  const resolved=drills.map(d=>{
+    const athlete=ATHLETES.find(a=>normName(a._canonicalName||a.name)===normName(d.canonicalName||d.name));
+    return athlete&&athlete._dbId ? {...d, dbAthleteId:athlete._dbId} : null;
+  }).filter(Boolean);
+  if(!resolved.length) return 0;
+
+  const byKey={}; // dbAthleteId|date -> true, so we only delete-then-insert once per athlete/date
+  for(const d of resolved){
+    byKey[`${d.dbAthleteId}|${d.date}`]=true;
+  }
+  for(const key of Object.keys(byKey)){
+    const [athleteId,date]=key.split('|');
+    try{
+      await sb.from('session_drills').delete().eq('athlete_id',athleteId).eq('test_date',date);
+    }catch(e){console.warn('session_drills delete failed:',e.message);}
+  }
+  const rows=resolved.map(d=>({
+    athlete_id:d.dbAthleteId, athlete_name:d.canonicalName,
+    test_date:d.date, drill_name:d.drill_name,
+    duration_min:d.duration_min, trimp:d.trimp, avg_hr:d.avg_hr,
+    trimp_per_min:d.trimp_per_min, movement_load:d.movement_load,
+  }));
+  let saved=0;
+  const CHUNK=200;
+  for(let i=0;i<rows.length;i+=CHUNK){
+    const chunk=rows.slice(i,i+CHUNK);
+    try{
+      const {error}=await sb.from('session_drills').insert(chunk);
+      if(!error) saved+=chunk.length;
+      else console.warn('session_drills insert failed:',error.message);
+    }catch(e){console.warn('session_drills insert failed:',e.message);}
+  }
+  return saved;
+}
+
 async function saveTestSessions(sessions, onProgress){
   if(!sb||!currentUser){toast('⚠ Sign in to save sessions');return 0;}
 
-  // Pre-aggregate: keep best rep per athlete per date (highest jump_height wins)
+  // Two different kinds of "multiple rows for the same athlete+date" can show
+  // up here, and they need OPPOSITE handling:
+  //  - VALD jump-testing reps: multiple attempts on the same day — keep only
+  //    the best one (highest jump_height), same as before.
+  //  - Firstbeat sessions: a real team can log more than one distinct
+  //    Measurement block on the same calendar day (e.g. a separate warmup/
+  //    testing recording plus the main practice). These are NOT competing
+  //    reps of the same thing — every one of them is real training that
+  //    happened, so they must be SUMMED (TRIMP, duration) rather than have
+  //    all but one silently discarded, which is what a "keep the best" rule
+  //    would otherwise do here since jump_height is null for all of them.
   const bestByKey={};
   for(const sess of sessions){
     const key=`${normName(sess.athlete_name)}|${sess.test_date}`;
+    const isFirstbeat = sess.trimp_total!=null && sess.jump_height==null;
     if(!bestByKey[key]){
       bestByKey[key]=sess;
+    } else if(isFirstbeat){
+      const cur=bestByKey[key];
+      const curDur=cur.session_duration_min||0, newDur=sess.session_duration_min||0;
+      const totalDur=curDur+newDur;
+      const merged={...cur};
+      merged.trimp_total = (cur.trimp_total||0) + (sess.trimp_total||0);
+      merged.session_duration_min = totalDur||null;
+      // Duration-weighted average HR, falling back to a plain average if
+      // duration is missing on one side.
+      merged.avg_hr = (cur.avg_hr!=null&&sess.avg_hr!=null)
+        ? (totalDur>0
+            ? parseFloat(((cur.avg_hr*curDur+sess.avg_hr*newDur)/totalDur).toFixed(1))
+            : parseFloat(((cur.avg_hr+sess.avg_hr)/2).toFixed(1)))
+        : (cur.avg_hr??sess.avg_hr??null);
+      merged.trimp_per_min = totalDur>0 ? parseFloat((merged.trimp_total/totalDur).toFixed(2)) : (cur.trimp_per_min??sess.trimp_per_min??null);
+      // Movement-load-derived efficiency doesn't carry a raw movement-load
+      // total through to this point, so keep whichever session's own
+      // efficiency score is higher-duration-weighted (best available proxy).
+      merged.effic_score = newDur>curDur ? (sess.effic_score??cur.effic_score) : (cur.effic_score??sess.effic_score);
+      // Acute/Chronic Training Load and ACWR are Firstbeat's own rolling
+      // calculations over its full history — every same-day row reports
+      // essentially the same value, so no summing needed; just keep either.
+      merged.acute_load = cur.acute_load??sess.acute_load??null;
+      merged.chronic_load = cur.chronic_load??sess.chronic_load??null;
+      merged.acwr = cur.acwr??sess.acwr??null;
+      merged.session_type = (cur.session_type&&sess.session_type&&cur.session_type!==sess.session_type)
+        ? `${cur.session_type} + ${sess.session_type}` : (cur.session_type||sess.session_type||null);
+      bestByKey[key]=merged;
     } else {
-      // Keep the rep with the highest jump_height
+      // VALD jump-testing rep — keep the highest jump_height
       const cur=bestByKey[key];
       if((sess.jump_height||0) > (cur.jump_height||0)) bestByKey[key]=sess;
     }
@@ -5682,7 +5886,63 @@ function initSupabase(){
     return false;
   }
   sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  // A password-reset email link logs the person in directly (the link itself
+  // IS a valid session token) — Supabase fires a PASSWORD_RECOVERY event when
+  // that happens, distinct from a normal sign-in. Without handling it, someone
+  // clicking "reset password" just silently lands in the dashboard with their
+  // OLD password unchanged and no way to actually set a new one. Catch that
+  // case here and show the "set new password" screen instead.
+  sb.auth.onAuthStateChange((event, session)=>{
+    if(event==='PASSWORD_RECOVERY'){
+      document.getElementById('login-overlay').style.display='none';
+      document.getElementById('reset-password-overlay').style.display='flex';
+    }
+  });
+
   return true;
+}
+
+// ── Forgot password ─────────────────────────────────────────────
+async function doForgotPassword(){
+  const email=document.getElementById('login-email').value.trim();
+  const msg=document.getElementById('login-msg');
+  if(!email){msg.innerHTML='<span style="color:var(--red);">Enter your email address above first, then click "Forgot password?"</span>';return;}
+  if(!sb&&!initSupabase()) return;
+  msg.innerHTML='<span style="color:var(--text3);">Sending reset email...</span>';
+  try{
+    const {error}=await sb.auth.resetPasswordForEmail(email,{redirectTo:window.location.origin});
+    if(error) throw error;
+    msg.innerHTML='<span style="color:var(--green);">✓ Check your email for a password reset link.</span>';
+  } catch(e){
+    msg.innerHTML='<span style="color:var(--red);">'+(e.message||'Could not send reset email')+'</span>';
+  }
+}
+
+// ── Set new password (after arriving via a reset email link) ───────
+async function doSetNewPassword(){
+  const pw=document.getElementById('reset-password-new').value;
+  const pw2=document.getElementById('reset-password-confirm').value;
+  const msg=document.getElementById('reset-password-msg');
+  const btn=document.getElementById('reset-password-btn');
+  if(!pw||!pw2){msg.innerHTML='<span style="color:var(--red);">Please fill in both fields.</span>';return;}
+  if(pw!==pw2){msg.innerHTML='<span style="color:var(--red);">Passwords don\'t match.</span>';return;}
+  if(pw.length<6){msg.innerHTML='<span style="color:var(--red);">Password must be at least 6 characters.</span>';return;}
+  btn.disabled=true;btn.textContent='SAVING...';
+  msg.innerHTML='<span style="color:var(--text3);">Saving new password...</span>';
+  try{
+    const {data,error}=await sb.auth.updateUser({password:pw});
+    if(error) throw error;
+    currentUser=data.user;
+    msg.innerHTML='<span style="color:var(--green);">✓ Password updated. Loading dashboard...</span>';
+    setTimeout(async ()=>{
+      document.getElementById('reset-password-overlay').style.display='none';
+      await onLoginSuccess();
+    }, 800);
+  } catch(e){
+    msg.innerHTML='<span style="color:var(--red);">'+(e.message||'Could not update password')+'</span>';
+    btn.disabled=false;btn.textContent='SET NEW PASSWORD';
+  }
 }
 
 // ── Sync status indicator ────────────────────────────────────────
